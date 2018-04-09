@@ -162,7 +162,9 @@ def main():
     parser.add_argument('-k', '--kmer_distr', dest='kmer_distr', required=True,
         help='Kmer distribution file.')
     parser.add_argument('-o', '--output', dest='output', required=True,
-        help='Output modified kraken report file with abundance estimates')
+        help='Bracken report output (modified kraken report file with abundance estimates)')
+    parser.add_argument('-s', '--output_ks', dest='output_ks', required=False,
+        help='Kraken-style report output. Only generated if parameter is set')
     parser.add_argument('-l', '--level', dest='level', required=False,
         default='S',
         choices=['D','P','C','O','F','G','S'],
@@ -366,7 +368,79 @@ def main():
         o_file.write(str(int(new_all_reads)) + '\t')
         o_file.write("%0.5f\n" % (float(new_all_reads)/float(sum_all_reads)))
     o_file.close()
-    
+
+    ###########################################################################
+    #Kraken-Style Report Section added 05/26/2016
+    #Jennifer Lu, jlu26
+    #For each child node, add reads to all parents
+    if args.output_ks:
+        new_reads = {}
+        test_reads = 0
+        for curr_leaf in leaf_nodes:
+            #Move to estimation level
+            curr_node = curr_leaf
+            if args.level in curr_node.level_id:
+                while args.level != curr_node.level_id:
+                    curr_node = curr_node.parent
+            #Determine number of reads to add
+            add_reads = curr_node.all_reads
+            if curr_node.taxid in lvl_taxids:
+                [name, all_reads, lvl_reads, added_reads] = lvl_taxids[curr_node.taxid]
+                add_reads += added_reads
+            #If this level tree already traversed, do not traverse
+            if curr_node.taxid in new_reads:
+                continue
+            #Save reads for this node
+            new_reads[curr_node.taxid] = add_reads
+            test_reads += add_reads
+            #Traverse tree
+            while curr_node.parent is not None:
+                #Move to parent
+                curr_node = curr_node.parent
+                #Add to dictionary if not previously found
+                if curr_node.taxid not in new_reads:
+                    if curr_node.taxid not in kmer_distr_dict:
+                        add_reads += curr_node.lvl_reads
+                    new_reads[curr_node.taxid] = 0
+                #Add reads
+                new_reads[curr_node.taxid] += add_reads
+        #Print modified kraken report
+        r_file = open(args.output_ks, 'w')
+        r_file.write("%0.2f\t" % (float(u_reads)/float(total_reads)*100))
+        r_file.write("%i\t" % u_reads)
+        r_file.write("%i\t" % u_reads)
+        r_file.write("U\t0\tunclassified\n")
+        #For each current parent node, print to file
+        curr_nodes = [root_node]
+        while len(curr_nodes) > 0:
+            curr_node = curr_nodes.pop(0)
+            #For each child node, add to list of nodes to evaluate
+            children = 0
+            for child_node in sorted(curr_node.children, key=operator.attrgetter('all_reads')):
+                #Add if at level or above
+                if child_node.level_id[0] != args.level or child_node.level_id == args.level:
+                    curr_nodes.insert(0,child_node)
+                    children += 1
+            #Print information for this level
+            #For level where estimate is made
+            if curr_node.taxid in lvl_taxids:
+                [name, all_reads, lvl_reads, added_reads] = lvl_taxids[curr_node.taxid]
+                new_all_reads = float(all_reads) + float(added_reads)
+
+            #Print information for this level
+            new_all_reads = new_reads[curr_node.taxid]
+            r_file.write("%0.2f\t" % (float(new_all_reads)/float(total_reads)*100))
+            r_file.write("%i\t" % (new_all_reads))
+            if children == 0:
+                r_file.write("%i\t" % (new_all_reads))
+            else:
+                r_file.write("0\t")
+            r_file.write(curr_node.level_id + "\t")
+            r_file.write(curr_node.taxid + "\t")
+            r_file.write(" "*curr_node.level_num*2 + curr_node.name + "\n")
+        r_file.close()
+    ###########################################################################
+
     #Print to screen
     print("BRACKEN SUMMARY (Kraken report: %s)" % args.input)
     print("    >>> Threshold: %i " % int(args.thresh))
@@ -380,81 +454,11 @@ def main():
     print("\t  >> Reads not distributed (eg. no %s above threshold): %i" % (abundance_lvl, nondistributed_reads))
     print("\t  >> Unclassified reads: %i" % u_reads)
     print("BRACKEN OUTPUT PRODUCED: %s" % args.output)
+    if args.output_ks:
+        print("KRAKEN-STYLE OUTPUT PRODUCED: %s" % args.output_ks)
     time = strftime("%m-%d-%Y %H:%M:%S", gmtime())
     sys.stdout.write("PROGRAM END TIME: " + time + '\n')
-    
-    ###########################################################################
-    #Kraken-Style Report Section added 05/26/2016
-    #Jennifer Lu, jlu26 
-    #For each child node, add reads to all parents 
-    new_reads = {}
-    test_reads = 0
-    for curr_leaf in leaf_nodes:
-        #Move to estimation level
-        curr_node = curr_leaf
-        if args.level in curr_node.level_id:
-            while args.level != curr_node.level_id:
-                curr_node = curr_node.parent
-        #Determine number of reads to add
-        add_reads = curr_node.all_reads
-        if curr_node.taxid in lvl_taxids:
-            [name, all_reads, lvl_reads, added_reads] = lvl_taxids[curr_node.taxid]
-            add_reads += added_reads
-        #If this level tree already traversed, do not traverse
-        if curr_node.taxid in new_reads:
-            continue
-        #Save reads for this node
-        new_reads[curr_node.taxid] = add_reads
-        test_reads += add_reads 
-        #Traverse tree 
-        while curr_node.parent is not None:
-            #Move to parent
-            curr_node = curr_node.parent
-            #Add to dictionary if not previously found
-            if curr_node.taxid not in new_reads:
-                if curr_node.taxid not in kmer_distr_dict:
-                    add_reads += curr_node.lvl_reads
-                new_reads[curr_node.taxid] = 0
-            #Add reads
-            new_reads[curr_node.taxid] += add_reads 
-    #Print modified kraken report 
-    new_report, extension = os.path.splitext(args.input)
-    r_file = open(new_report + '_bracken' + extension, 'w')
-    #r_file.write(unclassified_line)
-    r_file.write("%0.2f\t" % (float(u_reads)/float(total_reads)*100))
-    r_file.write("%i\t" % u_reads)
-    r_file.write("%i\t" % u_reads)
-    r_file.write("U\t0\tunclassified\n")
-    #For each current parent node, print to file 
-    curr_nodes = [root_node]
-    while len(curr_nodes) > 0:
-        curr_node = curr_nodes.pop(0)
-        #For each child node, add to list of nodes to evaluate 
-        children = 0
-        for child_node in sorted(curr_node.children, key=operator.attrgetter('all_reads')):
-            #Add if at level or above 
-            if child_node.level_id[0] != args.level or child_node.level_id == args.level:
-                curr_nodes.insert(0,child_node) 
-                children += 1
-        #Print information for this level 
-        #For level where estimate is made
-        if curr_node.taxid in lvl_taxids:
-            [name, all_reads, lvl_reads, added_reads] = lvl_taxids[curr_node.taxid]
-            new_all_reads = float(all_reads) + float(added_reads)
-       
-        #Print information for this level
-        new_all_reads = new_reads[curr_node.taxid]
-        r_file.write("%0.2f\t" % (float(new_all_reads)/float(total_reads)*100))
-        r_file.write("%i\t" % (new_all_reads))
-        if children == 0:
-            r_file.write("%i\t" % (new_all_reads))
-        else:
-            r_file.write("0\t")
-        r_file.write(curr_node.level_id + "\t")
-        r_file.write(curr_node.taxid + "\t")
-        r_file.write(" "*curr_node.level_num*2 + curr_node.name + "\n")
-    r_file.close() 
-    ###########################################################################
+
 
 if __name__ == "__main__":
     main()
